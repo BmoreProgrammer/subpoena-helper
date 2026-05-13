@@ -1,0 +1,159 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download cloudflared
+        run: |
+          powershell -Command "Invoke-WebRequest -Uri 'https://github.com/cloudflare/cloudflared/releases/download/2025.1.0/cloudflared-windows-amd64.exe' -OutFile 'cloudflared.exe'"
+        shell: pwsh
+
+      - name: Download Ollama
+        run: |
+          powershell -Command "Invoke-WebRequest -Uri 'https://github.com/ollama/ollama/releases/download/v0.5.6/ollama-windows-amd64.exe' -OutFile 'ollama.exe'"
+        shell: pwsh
+        timeout-minutes: 10
+
+      - name: Download NSIS
+        run: |
+          powershell -Command "Invoke-WebRequest -Uri 'https://nchc.dl.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip' -OutFile 'nsis.zip'"
+          powershell -Command "Expand-Archive -Path 'nsis.zip' -DestinationPath 'C:\nsis' -Force"
+          echo "C:\nsis\makensis.exe" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
+        timeout-minutes: 2
+
+      - name: Install Python deps
+        run: pip install --quiet pymupdf requests PySimpleGUI python-docx
+
+      - name: Install Ollama model
+        run: .\ollama.exe pull gemma4:e2b
+        timeout-minutes: 60
+
+      - name: Create directories
+        run: |
+          mkdir data\subject_files\lexisnexis_exports
+          mkdir data\subject_files\intake_forms
+          mkdir data\subject_files\correspondence
+          mkdir data\subject_files\notes
+          mkdir data\subject_files\medical_records
+          mkdir data\subject_files\police_reports
+          mkdir data\subject_files\financial_records
+          mkdir data\subject_files\other
+          mkdir config
+
+      - name: Build installer with NSIS
+        run: |
+          $script = @'
+          !include "MUI2.nsh"
+
+          Name "Subpoena Helper"
+          OutFile "SubpoenaHelper-Setup.exe"
+          InstallDir "$PROGRAMFILES64\Subpoena Helper"
+          InstallDirRegKey HKLM "Software\SubpoenaHelper" "Install_Dir"
+          RequestExecutionLevel admin
+
+          !insertmacro MUI_PAGE_WELCOME
+          !insertmacro MUI_PAGE_LICENSE "LICENSE.txt"
+          !insertmacro MUI_PAGE_DIRECTORY
+          !insertmacro MUI_PAGE_INSTFILES
+          !insertmacro MUI_PAGE_FINISH
+
+          !insertmacro MUI_UNPAGE_CONFIRM
+          !insertmacro MUI_UNPAGE_INSTFILES
+
+          !insertmacro MUI_LANGUAGE "English"
+
+          Section "Install"
+            SetOutPath "$INSTDIR"
+            File /r "SubpoenaHelper.py"
+            File /r "config.py"
+            File /r "setup.bat"
+            File /r "create_shortcut.bat"
+            File /r "requirements.txt"
+            File /r "README.txt"
+            File /r "ollama.exe"
+            File /r "cloudflared.exe"
+            File /r "src"
+            File /r "config"
+            File /r "data"
+
+            CreateDirectory "$SMPROGRAMS\Subpoena Helper"
+            CreateShortcut "$SMPROGRAMS\Subpoena Helper\Subpoena Helper.lnk" "$INSTDIR\SubpoenaHelper.py"
+            CreateShortcut "$SMPROGRAMS\Subpoena Helper\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
+            CreateShortcut "$DESKTOP\Subpoena Helper.lnk" "$INSTDIR\SubpoenaHelper.py"
+            WriteUninstaller "$INSTDIR\Uninstall.exe"
+            WriteRegStr HKLM "Software\SubpoenaHelper" "Install_Dir" "$INSTDIR"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SubpoenaHelper" "DisplayName" "Subpoena Helper"
+            WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SubpoenaHelper" "UninstallString" "$INSTDIR\Uninstall.exe"
+          SectionEnd
+
+          Section "Uninstall"
+            Delete "$INSTDIR\Uninstall.exe"
+            RMDir /r "$INSTDIR"
+            Delete "$SMPROGRAMS\Subpoena Helper\Subpoena Helper.lnk"
+            Delete "$SMPROGRAMS\Subpoena Helper\Uninstall.lnk"
+            Delete "$DESKTOP\Subpoena Helper.lnk"
+            RMDir "$SMPROGRAMS\Subpoena Helper"
+            DeleteRegKey HKLM "Software\SubpoenaHelper"
+            DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\SubpoenaHelper"
+          SectionEnd
+          '@
+          $script | Out-File -FilePath "installer.nsi" -Encoding utf8
+          echo "placeholder" > LICENSE.txt
+          C:\nsis\makensis.exe installer.nsi
+        shell: pwsh
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SubpoenaHelper-Setup
+          path: SubpoenaHelper-Setup.exe
+          retention-days: 30
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: SubpoenaHelper-Portable
+          path: |
+            SubpoenaHelper.py
+            config.py
+            setup.bat
+            create_shortcut.bat
+            requirements.txt
+            README.txt
+            ollama.exe
+            cloudflared.exe
+            src/
+            config/
+            data/
+          retention-days: 30
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            SubpoenaHelper-Setup.exe
+          body: |
+            **Recommended:** Download `SubpoenaHelper-Setup.exe` for a one-click installer.
+            
+            For portable use, download the `SubpoenaHelper-Portable` artifact from the Actions tab.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

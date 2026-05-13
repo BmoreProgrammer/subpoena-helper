@@ -1,0 +1,10 @@
+Subpoena Helper License Agreement
+
+Copyright (c) 2025
+
+This software is provided for legal document processing purposes only.
+Court documents processed by this software remain on the user's local machine.
+No data is transmitted to external servers without explicit user action.
+
+Redistribution or commercial use of this installer without written consent
+is not permitted.
